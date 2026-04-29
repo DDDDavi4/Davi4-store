@@ -13,6 +13,9 @@ venv/
 .venv/
 env/
 
+# 嵌入式 Python（太大，约 1.8GB，用 build_portable.py 构建）
+python/
+
 # IDE
 .vscode/
 .idea/
