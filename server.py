@@ -90,6 +90,21 @@ MODEL_REGISTRY = {
         "language": "zh",
         "use_itn": True,
     },
+    "Fun-ASR-Nano-2512": {
+        "display_name": "Fun-ASR Nano",
+        "description": "800M 参数，中文 CER 1.80%，支持方言/热词，远场噪声表现极强",
+        "model_id": "FunAudioLLM/Fun-ASR-Nano-2512",  # ModelScope ID
+        "local_dir": "Fun-ASR-Nano-2512",             # 本地 models/ 子目录名
+        "vad_model_id": "fsmn-vad",
+        "vad_local_dir": "fsmn-vad",
+        "need_vad": True,
+        "need_sensevoice_import": False,
+        "trust_remote_code": True,                    # Nano 需要 trust_remote_code
+        "remote_code": "./model.py",                  # Nano 需要指定 remote_code
+        "language": "中文",
+        "use_itn": True,
+        "generate_cache": True,                       # Nano generate 需要 cache={}
+    },
 }
 
 # 当前选中的模型 ID
@@ -164,6 +179,12 @@ def load_sensevoice_model(model_id: str = None):
         if vad_path:
             auto_kwargs["vad_model"] = vad_path
             auto_kwargs["vad_kwargs"] = {"max_single_segment_time": 6000}
+
+        # Nano 等新模型需要 trust_remote_code
+        if model_cfg.get("trust_remote_code"):
+            auto_kwargs["trust_remote_code"] = True
+        if model_cfg.get("remote_code"):
+            auto_kwargs["remote_code"] = model_cfg["remote_code"]
 
         sensevoice_model = AutoModel(**auto_kwargs)
 
@@ -478,7 +499,7 @@ def find_breath_split_point(audio_data: np.ndarray, sample_rate: int = SAMPLE_RA
 def do_sensevoice_recognize(audio_data: np.ndarray) -> str:
     """
     执行语音识别。
-    自动适配当前加载的模型（SenseVoiceSmall / Paraformer-zh）。
+    自动适配当前加载的模型（SenseVoiceSmall / Paraformer-zh / Fun-ASR-Nano）。
     输出需要 rich_transcription_postprocess 去除特殊标签（SenseVoice 系列需要）。
     """
     global sensevoice_model
@@ -487,15 +508,21 @@ def do_sensevoice_recognize(audio_data: np.ndarray) -> str:
     try:
         model_cfg = MODEL_REGISTRY.get(current_model_id, {})
         t0 = time.time()
-        res = sensevoice_model.generate(
+
+        generate_kwargs = dict(
             input=audio_data,
             language=model_cfg.get("language", "zh"),
             use_itn=model_cfg.get("use_itn", True),
         )
+        # Nano 模型需要 cache={} 参数
+        if model_cfg.get("generate_cache"):
+            generate_kwargs["cache"] = {}
+
+        res = sensevoice_model.generate(**generate_kwargs)
         # 提取文本并去除特殊标签（<|NEUTRAL|> <|Speech|> 等，SenseVoice 系列）
         raw_text = res[0]["text"] if res else ""
 
-        # SenseVoice 模型输出包含特殊标签，需要后处理；Paraformer 不需要
+        # SenseVoice 模型输出包含特殊标签，需要后处理；Paraformer / Nano 不需要
         if model_cfg.get("need_sensevoice_import"):
             from funasr.utils.postprocess_utils import rich_transcription_postprocess
             text = rich_transcription_postprocess(raw_text)

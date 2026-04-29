@@ -10,9 +10,10 @@
 - 支持清除转写内容
 
 ### 🔀 模型切换
-- 支持在 **SenseVoiceSmall** 和 **Paraformer-zh** 之间一键切换
+- 支持在三种模型之间一键切换
 - **SenseVoiceSmall**（234M）：自带 VAD + 情感识别，推理极快
 - **Paraformer-zh**（220M）：中文识别精度更高（AISHELL-1 CER 1.95%），适合对准确率要求更高的场景
+- **Fun-ASR-Nano**（800M）：中文 CER 1.80%，支持 7 大方言 + 热词增强，远场/噪声场景表现极强（首次下载约 2GB）
 - 顶部导航栏下拉框切换，切换时自动加载新模型（首次可能需要下载，约 1-2 分钟）
 
 ### 📝 提词器模式
@@ -41,7 +42,7 @@ python -m uvicorn server:app --host 127.0.0.1 --port 8765
 
 ## 技术架构
 
-- **语音引擎**：FunASR（支持 SenseVoiceSmall / Paraformer-zh 模型切换）
+- **语音引擎**：FunASR（支持 SenseVoiceSmall / Paraformer-zh / Fun-ASR-Nano 三模型切换）
 - **后端**：FastAPI + WebSocket（实时音频流 + 识别结果推送）
 - **前端**：单页 HTML，浏览器 getUserMedia 采集音频，零依赖
 - **模型加载**：优先本地 `models/` 目录，回退 ModelScope 在线下载；MODEL_REGISTRY 注册表支持动态切换
