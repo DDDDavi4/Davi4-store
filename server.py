@@ -565,7 +565,7 @@ async def _send_transcription(ws, mode, text, full_text,
 async def websocket_transcribe(ws: WebSocket):
     await ws.accept()
 
-    global accumulate_seconds
+    global accumulate_seconds, slice_mode
     mode = "recognition"
     script_lines = []
     current_line = 0
