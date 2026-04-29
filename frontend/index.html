@@ -400,6 +400,28 @@
     white-space: nowrap;
   }
 
+  .slice-mode-btn {
+    height: 32px;
+    padding: 0 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-primary);
+    color: var(--text-secondary);
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+    white-space: nowrap;
+  }
+  .slice-mode-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .slice-mode-btn.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+
   .teleprompter-toolbar .font-size-btn {
     width: 32px;
     height: 32px;
@@ -421,6 +443,8 @@
   }
 
   .teleprompter-toolbar .font-size-display {
+
+
     font-size: 14px;
     font-weight: 600;
     color: var(--text-primary);
@@ -1017,6 +1041,7 @@
         <div class="toolbar-sep"></div>
         <div class="toolbar-group">
           <span class="toolbar-label">片段</span>
+          <button class="slice-mode-btn" id="sliceModeBtn" onclick="toggleSliceMode()" title="切换切片模式">定时</button>
           <button class="font-size-btn" onclick="changeChunkSeconds(-0.5)">-</button>
           <span class="font-size-display" id="chunkSecondsDisplay">1.0s</span>
           <button class="font-size-btn" onclick="changeChunkSeconds(0.5)">+</button>
@@ -1068,6 +1093,7 @@
       <button class="btn btn-secondary" onclick="resetRecognition()">🔄 重置</button>
       <div class="control-group" style="margin-left:8px;">
         <span class="control-label">片段</span>
+        <button class="slice-mode-btn" id="sliceModeBtnD" onclick="toggleSliceMode()" title="切换切片模式">定时</button>
         <button class="font-size-btn" onclick="changeChunkSeconds(-0.5)">-</button>
         <span class="font-size-display" id="chunkSecondsDisplayD">1.0s</span>
         <button class="font-size-btn" onclick="changeChunkSeconds(0.5)">+</button>
@@ -1268,6 +1294,20 @@ function handleMessage(data) {
         currentLine = data.current_line;
         lastDisplayedLine = -1;  // 强制重绘
         updateTeleprompterDisplay();
+      }
+      break;
+    case 'slice_mode_changed':
+      // 后端确认切片模式切换
+      if (data.mode) {
+        currentSliceMode = data.mode;
+        const label = currentSliceMode === 'timer' ? '定时' : '气口';
+        ['sliceModeBtn', 'sliceModeBtnD'].forEach(id => {
+          const btn = document.getElementById(id);
+          if (btn) {
+            btn.textContent = label;
+            btn.classList.toggle('active', currentSliceMode === 'breath');
+          }
+        });
       }
       break;
     case 'segments_loaded':
@@ -1791,6 +1831,18 @@ function syncChunkSecondsDisplay() {
     if (el1) el1.textContent = val;
     if (el2) el2.textContent = val;
   }).catch(() => {});
+  // 同步切片模式
+  fetch('/api/slice-mode').then(r => r.json()).then(d => {
+    currentSliceMode = d.mode;
+    const label = currentSliceMode === 'timer' ? '定时' : '气口';
+    ['sliceModeBtn', 'sliceModeBtnD'].forEach(id => {
+      const btn = document.getElementById(id);
+      if (btn) {
+        btn.textContent = label;
+        btn.classList.toggle('active', currentSliceMode === 'breath');
+      }
+    });
+  }).catch(() => {});
 }
 
 function changeChunkSeconds(delta) {
@@ -1807,6 +1859,27 @@ function changeChunkSeconds(delta) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ cmd: 'set_chunk_seconds', seconds: val }));
   }
+}
+
+// ===== 切片模式切换 =====
+let currentSliceMode = 'timer';  // 'timer' 或 'breath'
+
+function toggleSliceMode() {
+  currentSliceMode = currentSliceMode === 'timer' ? 'breath' : 'timer';
+  const label = currentSliceMode === 'timer' ? '定时' : '气口';
+  // 更新所有按钮文字和样式
+  ['sliceModeBtn', 'sliceModeBtnD'].forEach(id => {
+    const btn = document.getElementById(id);
+    if (btn) {
+      btn.textContent = label;
+      btn.classList.toggle('active', currentSliceMode === 'breath');
+    }
+  });
+  // 气口模式下片段时间调节失去意义，但保留（用作最小累积时长）
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ cmd: 'set_slice_mode', mode: currentSliceMode }));
+  }
+  showToast(`切片模式: ${currentSliceMode === 'timer' ? '定时切片' : '气口切片（自动检测静音间隙）'}`);
 }
 
 function updateScrollSpeed(val) {

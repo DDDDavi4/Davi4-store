@@ -46,6 +46,18 @@ def get_accumulate_samples():
 MAX_BUFFER_SECONDS = 8.0
 MAX_BUFFER_SAMPLES = int(SAMPLE_RATE * MAX_BUFFER_SECONDS)
 
+# ============ 切片模式 ============
+# "timer"  = 固定时间切片（accumulate_seconds），简单直接
+# "breath" = 气口切片，检测静音间隙在气口处切片，识别更准确
+slice_mode = "timer"
+
+# 气口切片参数
+BREATH_SILENCE_THRESHOLD = 0.008   # 静音能量阈值（RMS）
+BREATH_SILENCE_MIN_MS = 250        # 静音最短持续时间（毫秒），短于此不算气口
+BREATH_SPEECH_MIN_MS = 400         # 语音最短持续时间（毫秒），短于此不切片
+BREATH_MAX_SECONDS = 6.0           # 气口模式最大累积时长，超过强制切片
+BREATH_MAX_SAMPLES = int(SAMPLE_RATE * BREATH_MAX_SECONDS)
+
 # 匹配窗口
 MATCH_WINDOW_SIZE = 12
 
@@ -121,6 +133,11 @@ def get_model_status():
 @app.get("/api/chunk-seconds")
 def get_chunk_seconds():
     return {"seconds": accumulate_seconds}
+
+
+@app.get("/api/slice-mode")
+def get_slice_mode():
+    return {"mode": slice_mode, "description": "timer = fixed interval, breath = silence gap detection"}
 
 
 # ============ 文本匹配工具 ============
@@ -286,6 +303,64 @@ def decode_pcm_from_base64(b64_data: str) -> np.ndarray:
         return np.array([], dtype=np.float32)
 
 
+def find_breath_split_point(audio_data: np.ndarray, sample_rate: int = SAMPLE_RATE) -> int:
+    """
+    在音频数据中寻找最佳气口（静音间隙）位置用于切片。
+    
+    策略：
+    1. 将音频分帧（每帧 10ms），计算每帧 RMS 能量
+    2. 找到所有静音帧（RMS < 阈值）组成的连续区间
+    3. 在音频后半段（40%~100%）找最长静音区间的中点作为切片点
+    4. 如果没有找到合适的气口，返回 -1（由上层决定是否强制切片）
+    
+    返回：切片点样本索引，-1 表示未找到
+    """
+    frame_size = int(sample_rate * 0.01)  # 10ms per frame
+    n_frames = len(audio_data) // frame_size
+    if n_frames < 10:
+        return -1
+    
+    # 计算每帧 RMS
+    energies = np.zeros(n_frames)
+    for i in range(n_frames):
+        frame = audio_data[i * frame_size : (i + 1) * frame_size]
+        energies[i] = float(np.sqrt(np.mean(frame ** 2)))
+    
+    # 找静音帧（RMS < 阈值）
+    is_silent = energies < BREATH_SILENCE_THRESHOLD
+    
+    # 合并连续静音帧为区间
+    min_silent_frames = int(BREATH_SILENCE_MIN_MS / 10)  # 250ms = 25帧
+    min_speech_frames = int(BREATH_SPEECH_MIN_MS / 10)    # 400ms = 40帧
+    
+    # 只在音频后半段找气口（保证前面有足够语音）
+    search_start = max(min_speech_frames, n_frames // 3)
+    
+    best_split = -1
+    best_len = 0
+    
+    # 遍历寻找连续静音区间
+    i = search_start
+    while i < n_frames:
+        if is_silent[i]:
+            # 找到连续静音的起止
+            start = i
+            while i < n_frames and is_silent[i]:
+                i += 1
+            silence_len = i - start
+            
+            # 静音区间够长才算气口
+            if silence_len >= min_silent_frames and silence_len > best_len:
+                best_len = silence_len
+                # 取静音区间中点偏前（偏向前一段语音末尾）
+                mid = start + silence_len // 3
+                best_split = mid * frame_size
+        else:
+            i += 1
+    
+    return best_split
+
+
 # ============ SenseVoice 识别 ============
 
 def do_sensevoice_recognize(audio_data: np.ndarray) -> str:
@@ -442,29 +517,66 @@ async def websocket_transcribe(ws: WebSocket):
                         if len(pcm_float) > 0:
                             audio_buffer = np.concatenate([audio_buffer, pcm_float])
 
-                            # 达到累积时间且有足够能量，触发识别
-                            now = time.time()
-                            time_since_last = now - last_recognize_time
-                            buffer_duration = len(audio_buffer) / SAMPLE_RATE
+                            if slice_mode == "breath":
+                                # === 气口切片模式：在静音间隙处切片 ===
+                                if len(audio_buffer) >= get_accumulate_samples():
+                                    # 先检查是否有气口（静音间隙）
+                                    split_point = find_breath_split_point(audio_buffer)
+                                    if split_point > 0:
+                                        # 在气口处切片：前半段送去识别，后半段留在 buffer
+                                        speech_part = audio_buffer[:split_point]
+                                        rms = float(np.sqrt(np.mean(speech_part ** 2)))
+                                        if rms > 0.005:
+                                            audio_buffer = audio_buffer[split_point:]
+                                            last_recognize_time = time.time()
+                                            _start_recognize(speech_part)
+                                        else:
+                                            # 整段都是静音，清掉
+                                            audio_buffer = np.array([], dtype=np.float32)
+                                    elif len(audio_buffer) >= BREATH_MAX_SAMPLES:
+                                        # 超时兜底：强制切片
+                                        rms = float(np.sqrt(np.mean(audio_buffer ** 2)))
+                                        if rms > 0.005:
+                                            process_audio = audio_buffer.copy()
+                                            audio_buffer = np.array([], dtype=np.float32)
+                                            last_recognize_time = time.time()
+                                            _start_recognize(process_audio)
+                                        else:
+                                            audio_buffer = np.array([], dtype=np.float32)
+                                # 气口模式下也保留绝对兜底
+                                if len(audio_buffer) >= MAX_BUFFER_SAMPLES:
+                                    rms = float(np.sqrt(np.mean(audio_buffer ** 2)))
+                                    if rms > 0.005:
+                                        process_audio = audio_buffer.copy()
+                                        audio_buffer = np.array([], dtype=np.float32)
+                                        last_recognize_time = time.time()
+                                        _start_recognize(process_audio)
+                                    else:
+                                        audio_buffer = np.array([], dtype=np.float32)
+                            else:
+                                # === 定时切片模式：固定时间累积 ===
+                                now = time.time()
+                                time_since_last = now - last_recognize_time
+                                buffer_duration = len(audio_buffer) / SAMPLE_RATE
 
-                            if len(audio_buffer) >= get_accumulate_samples() and time_since_last > max(0.5, accumulate_seconds - 0.3):
-                                rms = float(np.sqrt(np.mean(audio_buffer ** 2)))
-                                if rms > 0.005:
-                                    process_audio = audio_buffer.copy()
-                                    audio_buffer = np.array([], dtype=np.float32)
-                                    last_recognize_time = now
-                                    _start_recognize(process_audio)
+                                if len(audio_buffer) >= get_accumulate_samples() and time_since_last > max(0.5, accumulate_seconds - 0.3):
+                                    rms = float(np.sqrt(np.mean(audio_buffer ** 2)))
+                                    if rms > 0.005:
+                                        process_audio = audio_buffer.copy()
+                                        audio_buffer = np.array([], dtype=np.float32)
+                                        last_recognize_time = now
+                                        _start_recognize(process_audio)
 
-                            # 兜底：缓冲区超长强制处理
-                            if len(audio_buffer) >= MAX_BUFFER_SAMPLES:
-                                rms = float(np.sqrt(np.mean(audio_buffer ** 2)))
-                                if rms > 0.005:
-                                    process_audio = audio_buffer.copy()
-                                    audio_buffer = np.array([], dtype=np.float32)
-                                    last_recognize_time = now
-                                    _start_recognize(process_audio)
-                                else:
-                                    audio_buffer = np.array([], dtype=np.float32)
+                                # 兜底：缓冲区超长强制处理
+                                if len(audio_buffer) >= MAX_BUFFER_SAMPLES:
+                                    rms = float(np.sqrt(np.mean(audio_buffer ** 2)))
+                                    if rms > 0.005:
+                                        process_audio = audio_buffer.copy()
+                                        audio_buffer = np.array([], dtype=np.float32)
+                                        last_recognize_time = now
+                                        _start_recognize(process_audio)
+                                    else:
+                                        audio_buffer = np.array([], dtype=np.float32)
 
                             # 计算音量并发送
                             rms = float(np.sqrt(np.mean(pcm_float ** 2)))
@@ -488,6 +600,16 @@ async def websocket_transcribe(ws: WebSocket):
                     val = max(0.5, min(5.0, float(val)))  # 限制 0.5~5秒
                     accumulate_seconds = val
                     await ws.send_json({"type": "chunk_seconds_changed", "seconds": accumulate_seconds})
+
+                elif cmd == "set_slice_mode":
+                    new_mode = msg.get("mode", "timer")
+                    if new_mode in ("timer", "breath"):
+                        slice_mode = new_mode
+                        audio_buffer = np.array([], dtype=np.float32)  # 切换模式时清空缓冲区
+                        print(f"[SliceMode] 切换到 {'定时切片' if slice_mode == 'timer' else '气口切片'} 模式")
+                        await ws.send_json({"type": "slice_mode_changed", "mode": slice_mode})
+                    else:
+                        await ws.send_json({"type": "error", "message": f"Unknown slice mode: {new_mode}"})
 
                 elif cmd == "load_script":
                     script_text = msg.get("text", "")
