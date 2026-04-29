@@ -85,6 +85,20 @@
   .model-badge.loaded .dot { background: var(--green); }
   .model-badge.error .dot { background: var(--red); animation: none; }
 
+  .model-select {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text-primary);
+    padding: 4px 8px;
+    font-size: 12px;
+    outline: none;
+    cursor: pointer;
+    transition: border-color 0.2s;
+  }
+  .model-select:hover { border-color: var(--accent); }
+  .model-select:focus { border-color: var(--accent); }
+
   @keyframes pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.4; }
@@ -929,6 +943,10 @@
       <span class="dot"></span>
       <span id="modelStatus">加载中</span>
     </div>
+    <select class="model-select" id="modelSelect" onchange="switchModel(this.value)" title="切换识别模型">
+      <option value="SenseVoiceSmall">SenseVoice 小型</option>
+      <option value="paraformer-zh">Paraformer 中文</option>
+    </select>
   </div>
   <div class="topbar-right">
     <div class="mode-tabs">
@@ -1310,6 +1328,16 @@ function handleMessage(data) {
         });
       }
       break;
+    case 'model_switching':
+      // 模型切换中
+      showToast(data.message || '模型切换中...', 'info');
+      // 显示加载遮罩
+      document.getElementById('loadingOverlay').classList.remove('hidden');
+      document.querySelector('.loading-text').textContent = '正在切换模型...';
+      document.getElementById('loadingStatus').textContent = '首次加载可能需要1-2分钟';
+      // 开始轮询模型状态
+      pollModelSwitchStatus();
+      break;
     case 'segments_loaded':
       if (data.segments) {
         segments = data.segments;
@@ -1690,10 +1718,26 @@ async function checkModelStatus() {
 
     const badge = document.getElementById('modelBadge');
     const status = document.getElementById('modelStatus');
+    const modelSelect = document.getElementById('modelSelect');
+
+    // 更新模型选择下拉框选项（如果后端有新模型）
+    if (data.available_models) {
+      const currentVal = modelSelect.value;
+      modelSelect.innerHTML = '';
+      for (const [id, info] of Object.entries(data.available_models)) {
+        const opt = document.createElement('option');
+        opt.value = id;
+        opt.textContent = info.name;
+        opt.title = info.desc;
+        modelSelect.appendChild(opt);
+      }
+      modelSelect.value = data.model_id || currentVal;
+    }
 
     if (data.loaded) {
       badge.className = 'model-badge loaded';
-      status.textContent = 'SenseVoice 就绪';
+      status.textContent = (data.model_name || data.model_id) + ' 就绪';
+      modelSelect.value = data.model_id || 'SenseVoiceSmall';
       document.getElementById('loadingOverlay').classList.add('hidden');
     } else if (data.loading) {
       badge.className = 'model-badge';
@@ -1710,6 +1754,54 @@ async function checkModelStatus() {
     }
   } catch (e) {
     setTimeout(checkModelStatus, 2000);
+  }
+}
+
+// 轮询模型切换状态，直到加载完成或失败
+function pollModelSwitchStatus() {
+  fetch('/api/model-status').then(r => r.json()).then(data => {
+    const badge = document.getElementById('modelBadge');
+    const status = document.getElementById('modelStatus');
+    const modelSelect = document.getElementById('modelSelect');
+
+    if (data.loaded) {
+      badge.className = 'model-badge loaded';
+      status.textContent = (data.model_name || data.model_id) + ' 就绪';
+      modelSelect.value = data.model_id;
+      document.getElementById('loadingOverlay').classList.add('hidden');
+      showToast(`已切换到 ${data.model_name || data.model_id}`, 'info');
+    } else if (data.error) {
+      badge.className = 'model-badge error';
+      status.textContent = '加载失败';
+      document.getElementById('loadingStatus').textContent = data.error.slice(0, 100);
+      document.getElementById('loadingStatus').style.color = 'var(--red)';
+      setTimeout(() => {
+        document.getElementById('loadingOverlay').classList.add('hidden');
+      }, 3000);
+      showToast('模型加载失败: ' + data.error.slice(0, 60), 'error');
+    } else if (data.loading) {
+      // 还在加载，继续轮询
+      setTimeout(pollModelSwitchStatus, 2000);
+    }
+  }).catch(() => {
+    setTimeout(pollModelSwitchStatus, 2000);
+  });
+}
+
+// 切换模型
+async function switchModel(modelId) {
+  if (!modelId) return;
+  // 如果正在录音，拒绝切换
+  if (isRecording) {
+    showToast('请先停止录音再切换模型', 'error');
+    // 恢复选择框到当前值
+    fetch('/api/model-status').then(r => r.json()).then(d => {
+      document.getElementById('modelSelect').value = d.model_id || 'SenseVoiceSmall';
+    });
+    return;
+  }
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ cmd: 'set_model', model_id: modelId }));
   }
 }
 

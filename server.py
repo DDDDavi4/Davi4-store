@@ -63,6 +63,38 @@ MATCH_WINDOW_SIZE = 12
 
 app = FastAPI(title="SenseVoice Teleprompter")
 
+# ============ 模型注册表 ============
+# 支持多个 FunASR 模型，可通过前端切换
+MODEL_REGISTRY = {
+    "SenseVoiceSmall": {
+        "display_name": "SenseVoice 小型",
+        "description": "234M 参数，自带 VAD + 情感识别，推理极快",
+        "model_id": "iic/SenseVoiceSmall",          # ModelScope ID
+        "local_dir": "SenseVoiceSmall",              # 本地 models/ 子目录名
+        "vad_model_id": "fsmn-vad",
+        "vad_local_dir": "fsmn-vad",
+        "need_vad": True,
+        "need_sensevoice_import": True,              # 需要额外 import 注册模型类
+        "language": "zh",
+        "use_itn": True,
+    },
+    "paraformer-zh": {
+        "display_name": "Paraformer 中文",
+        "description": "220M 参数，中文识别精度更高 (CER 1.95%)，支持流式",
+        "model_id": "paraformer-zh",                  # ModelScope ID
+        "local_dir": "paraformer-zh",                 # 本地 models/ 子目录名
+        "vad_model_id": "fsmn-vad",
+        "vad_local_dir": "fsmn-vad",
+        "need_vad": True,
+        "need_sensevoice_import": False,
+        "language": "zh",
+        "use_itn": True,
+    },
+}
+
+# 当前选中的模型 ID
+current_model_id = "SenseVoiceSmall"
+
 # ============ 全局模型状态 ============
 sensevoice_model = None
 sensevoice_loading = False
@@ -70,44 +102,83 @@ sensevoice_loaded = False
 sensevoice_error: Optional[str] = None
 
 
-def load_sensevoice_model():
-    """加载 SenseVoice 模型（CPU 模式）"""
-    global sensevoice_model, sensevoice_loading, sensevoice_loaded, sensevoice_error
+def _resolve_model_path(model_cfg: dict) -> tuple:
+    """根据本地/在线策略解析模型和 VAD 的路径"""
+    base_dir = Path(__file__).parent
+
+    # 模型路径
+    local_model = base_dir / "models" / model_cfg["local_dir"]
+    model_path = str(local_model) if local_model.exists() else model_cfg["model_id"]
+    model_src = "本地 models/" if local_model.exists() else "ModelScope 在线"
+
+    # VAD 路径
+    if model_cfg.get("need_vad"):
+        local_vad = base_dir / "models" / model_cfg["vad_local_dir"]
+        vad_path = str(local_vad) if local_vad.exists() else model_cfg["vad_model_id"]
+        vad_src = "本地 models/" if local_vad.exists() else "ModelScope 在线"
+    else:
+        vad_path = None
+        vad_src = "-"
+
+    return model_path, model_src, vad_path, vad_src
+
+
+def load_sensevoice_model(model_id: str = None):
+    """加载指定模型（CPU 模式）"""
+    global sensevoice_model, sensevoice_loading, sensevoice_loaded, sensevoice_error, current_model_id
+
+    if model_id is None:
+        model_id = current_model_id
+
+    if model_id not in MODEL_REGISTRY:
+        print(f"[Model] 未知模型: {model_id}，可用: {list(MODEL_REGISTRY.keys())}")
+        return
+
     sensevoice_loading = True
+    sensevoice_loaded = False
+    sensevoice_error = None
+
     try:
-        from funasr.models.sense_voice.model import SenseVoiceSmall  # 注册模型类
         from funasr import AutoModel
 
-        # 便携模式：优先从本地 models/ 目录加载
-        base_dir = Path(__file__).parent
-        local_sensevoice = base_dir / "models" / "SenseVoiceSmall"
-        local_vad = base_dir / "models" / "fsmn-vad"
+        model_cfg = MODEL_REGISTRY[model_id]
+        model_path, model_src, vad_path, vad_src = _resolve_model_path(model_cfg)
 
-        model_path = str(local_sensevoice) if local_sensevoice.exists() else "iic/SenseVoiceSmall"
-        vad_path = str(local_vad) if local_vad.exists() else "fsmn-vad"
+        # 某些模型需要额外 import 触发注册
+        if model_cfg.get("need_sensevoice_import"):
+            from funasr.models.sense_voice.model import SenseVoiceSmall  # 注册模型类
 
-        src = "本地 models/" if local_sensevoice.exists() else "ModelScope 在线"
-        print(f"[SenseVoice] 正在加载 SenseVoiceSmall + fsmn-vad (CPU, 来源: {src})...")
+        print(f"[Model] 正在加载 {model_cfg['display_name']} ({model_id})")
+        print(f"[Model]   模型来源: {model_src}  |  VAD 来源: {vad_src}")
+
         t0 = time.time()
-        sensevoice_model = AutoModel(
+
+        auto_kwargs = dict(
             model=model_path,
-            vad_model=vad_path,
-            vad_kwargs={"max_single_segment_time": 6000},
             device="cpu",
             ncpu=8,
             disable_update=True,
         )
+
+        # 如果模型需要 VAD
+        if vad_path:
+            auto_kwargs["vad_model"] = vad_path
+            auto_kwargs["vad_kwargs"] = {"max_single_segment_time": 6000}
+
+        sensevoice_model = AutoModel(**auto_kwargs)
+
+        current_model_id = model_id
         sensevoice_loaded = True
         elapsed = time.time() - t0
-        print(f"[SenseVoice] 加载完成! ({elapsed:.1f}s)")
+        print(f"[Model] {model_cfg['display_name']} 加载完成! ({elapsed:.1f}s)")
     except Exception as e:
         sensevoice_error = str(e)
-        print(f"[SenseVoice] 加载失败: {e}")
+        print(f"[Model] 加载失败: {e}")
     finally:
         sensevoice_loading = False
 
 
-# 启动时后台加载模型
+# 启动时后台加载默认模型
 threading.Thread(target=load_sensevoice_model, daemon=True).start()
 
 
@@ -123,12 +194,53 @@ def get_audio_devices():
 
 @app.get("/api/model-status")
 def get_model_status():
+    model_cfg = MODEL_REGISTRY.get(current_model_id, {})
     return {
         "engine": "sensevoice",
+        "model_id": current_model_id,
+        "model_name": model_cfg.get("display_name", current_model_id),
+        "model_desc": model_cfg.get("description", ""),
         "loading": sensevoice_loading,
         "loaded": sensevoice_loaded,
         "error": sensevoice_error,
+        "available_models": {
+            k: {"name": v["display_name"], "desc": v["description"]}
+            for k, v in MODEL_REGISTRY.items()
+        },
     }
+
+
+@app.post("/api/switch-model")
+async def switch_model_api(request):
+    """通过 HTTP API 切换模型"""
+    import json as _json
+    body = await request.json()
+    model_id = body.get("model_id", "")
+    return await _do_switch_model(model_id)
+
+
+async def _do_switch_model(model_id: str):
+    """执行模型切换逻辑"""
+    global sensevoice_model, sensevoice_loaded, sensevoice_error
+
+    if model_id not in MODEL_REGISTRY:
+        return {"ok": False, "error": f"未知模型: {model_id}"}
+    if model_id == current_model_id and sensevoice_loaded:
+        return {"ok": False, "error": f"已在使用 {MODEL_REGISTRY[model_id]['display_name']}"}
+
+    # 卸载旧模型
+    print(f"[Model] 卸载当前模型，准备切换到 {model_id}...")
+    sensevoice_model = None
+    sensevoice_loaded = False
+    sensevoice_error = None
+
+    # 后台加载新模型
+    def _load():
+        load_sensevoice_model(model_id)
+    t = threading.Thread(target=_load, daemon=True)
+    t.start()
+
+    return {"ok": True, "message": f"正在切换到 {MODEL_REGISTRY[model_id]['display_name']}..."}
 
 @app.get("/api/chunk-seconds")
 def get_chunk_seconds():
@@ -365,34 +477,40 @@ def find_breath_split_point(audio_data: np.ndarray, sample_rate: int = SAMPLE_RA
 
 def do_sensevoice_recognize(audio_data: np.ndarray) -> str:
     """
-    执行 SenseVoice 识别。
-    SenseVoiceSmall 自带 fsmn-vad，能自动处理长音频分段。
-    输出需要 rich_transcription_postprocess 去除特殊标签。
+    执行语音识别。
+    自动适配当前加载的模型（SenseVoiceSmall / Paraformer-zh）。
+    输出需要 rich_transcription_postprocess 去除特殊标签（SenseVoice 系列需要）。
     """
     global sensevoice_model
     if sensevoice_model is None:
         return ""
     try:
-        from funasr.utils.postprocess_utils import rich_transcription_postprocess
-
+        model_cfg = MODEL_REGISTRY.get(current_model_id, {})
         t0 = time.time()
         res = sensevoice_model.generate(
             input=audio_data,
-            language="zh",
-            use_itn=True,
+            language=model_cfg.get("language", "zh"),
+            use_itn=model_cfg.get("use_itn", True),
         )
-        # 提取文本并去除特殊标签（<|NEUTRAL|> <|Speech|> 等）
+        # 提取文本并去除特殊标签（<|NEUTRAL|> <|Speech|> 等，SenseVoice 系列）
         raw_text = res[0]["text"] if res else ""
-        text = rich_transcription_postprocess(raw_text)
+
+        # SenseVoice 模型输出包含特殊标签，需要后处理；Paraformer 不需要
+        if model_cfg.get("need_sensevoice_import"):
+            from funasr.utils.postprocess_utils import rich_transcription_postprocess
+            text = rich_transcription_postprocess(raw_text)
+        else:
+            text = raw_text
 
         elapsed = time.time() - t0
         audio_duration = len(audio_data) / SAMPLE_RATE
         rtf = elapsed / audio_duration if audio_duration > 0 else 0
-        print(f"[SenseVoice] {audio_duration:.1f}s -> {elapsed:.2f}s (RTF={rtf:.2f}) \"{text[:50]}\"")
+        model_name = model_cfg.get("display_name", current_model_id)
+        print(f"[Model:{model_name}] {audio_duration:.1f}s -> {elapsed:.2f}s (RTF={rtf:.2f}) \"{text[:50]}\"")
 
         return text.strip()
     except Exception as e:
-        print(f"[SenseVoice] 识别错误: {e}")
+        print(f"[Model] 识别错误: {e}")
         return ""
 
 
@@ -405,6 +523,7 @@ async def _send_transcription(ws, mode, text, full_text,
         "type": "transcription",
         "text": text,
         "full_text": full_text,
+        "model_id": current_model_id,
     }
 
     if mode == "teleprompter" and script_lines:
@@ -610,6 +729,19 @@ async def websocket_transcribe(ws: WebSocket):
                         await ws.send_json({"type": "slice_mode_changed", "mode": slice_mode})
                     else:
                         await ws.send_json({"type": "error", "message": f"Unknown slice mode: {new_mode}"})
+
+                elif cmd == "set_model":
+                    new_model_id = msg.get("model_id", "")
+                    if new_model_id and ws_recording:
+                        await ws.send_json({"type": "error", "message": "请先停止录音再切换模型"})
+                    elif new_model_id:
+                        result = await _do_switch_model(new_model_id)
+                        if result.get("ok"):
+                            await ws.send_json({"type": "model_switching", "model_id": new_model_id, "message": result["message"]})
+                        else:
+                            await ws.send_json({"type": "error", "message": result.get("error", "切换失败")})
+                    else:
+                        await ws.send_json({"type": "error", "message": "Missing model_id"})
 
                 elif cmd == "load_script":
                     script_text = msg.get("text", "")
