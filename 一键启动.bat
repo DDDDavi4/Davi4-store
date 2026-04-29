@@ -1,6 +1,7 @@
 @echo off
+setlocal enabledelayedexpansion
 chcp 65001 >nul 2>&1
-title SenseVoice Teleprompter - 一键启动
+title SenseVoice Teleprompter
 color 0A
 
 cd /d "%~dp0"
@@ -8,100 +9,87 @@ cd /d "%~dp0"
 echo.
 echo  =====================================================
 echo     SenseVoice Teleprompter
-echo     一键安装并启动（首次需要几分钟）
+echo     Auto Install and Start
 echo  =====================================================
 echo.
 
-:: 检查是否已安装
+:: ============================================================
+:: Step 1: Python
+:: ============================================================
 if exist "python\python.exe" (
-    echo  [OK] Python 已安装
-    echo.
-    goto :check_deps
+    echo  [1/4] Python ... OK
+    goto :step2
 )
 
-:: ---- 第一步：下载 Python Embedded ----
-echo  [1/4] 下载 Python Embedded ...
-set PYTHON_VERSION=3.11.9
-set PYTHON_ZIP=python-%PYTHON_VERSION%-embed-amd64.zip
-set PYTHON_URL=https://www.python.org/ftp/python/%PYTHON_VERSION%/%PYTHON_ZIP%
+echo  [1/4] Downloading Python 3.11.9 ...
+set PY_VER=3.11.9
+set PY_ZIP=python-%PY_VER%-embed-amd64.zip
+set PY_URL=https://www.python.org/ftp/python/%PY_VER%/%PY_ZIP%
 
-if not exist "%PYTHON_ZIP%" (
-    echo  正在下载 %PYTHON_URL% ...
-    powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri '%PYTHON_URL%' -OutFile '%PYTHON_ZIP%'"
+if not exist "%PY_ZIP%" (
+    powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri '%PY_URL%' -OutFile '%PY_ZIP%'"
     if errorlevel 1 (
-        echo  [FAIL] 下载 Python 失败！请检查网络连接。
+        echo  [FAIL] Python download failed
         pause
         exit /b 1
     )
 )
 
-:: 解压
 if not exist "python" (
-    echo  解压中...
-    powershell -Command "Expand-Archive -Path '%PYTHON_ZIP%' -DestinationPath 'python' -Force"
-    del "%PYTHON_ZIP%"
+    powershell -Command "Expand-Archive -Path '%PY_ZIP%' -DestinationPath 'python' -Force"
+    del "%PY_ZIP%" 2>nul
 )
-echo  [OK] Python 安装完成
-echo.
+echo  [1/4] Python ... OK
 
-:: ---- 第二步：配置 pip ----
-:check_deps
-echo  [2/4] 检查 pip ...
+:: ============================================================
+:: Step 2: pip
+:: ============================================================
+:step2
+echo  [2/4] pip ...
 python\python.exe -c "import pip" >nul 2>&1
 if errorlevel 1 (
-    echo  正在安装 pip ...
+    echo        Installing pip ...
     if not exist "get-pip.py" (
         powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://bootstrap.pypa.io/get-pip.py' -OutFile 'get-pip.py'"
     )
     python\python.exe get-pip.py
     del get-pip.py 2>nul
-
-    :: 修改 ._pth 文件以启用 site-packages
     powershell -Command "(Get-Content 'python\python311._pth') -replace '#import site','import site' | Set-Content 'python\python311._pth'"
-    :: 添加 site-packages 路径
     echo .\Lib\site-packages >> python\python311._pth
 )
-echo  [OK] pip 就绪
-echo.
+echo  [2/4] pip ... OK
 
-:: ---- 第三步：安装 Python 依赖 ----
-echo  [3/4] 安装依赖（首次需要5-10分钟）...
+:: ============================================================
+:: Step 3: Dependencies
+:: ============================================================
+echo  [3/4] Dependencies ...
 python\python.exe -c "import funasr" >nul 2>&1
 if errorlevel 1 (
-    echo  正在安装核心依赖...
-    echo  Step 1/2: 安装 web 框架和工具库...
-    python\python.exe -m pip install --no-cache-dir fastapi uvicorn websockets numpy pydantic soundfile six torch_complex
-    if errorlevel 1 (
-        echo  [WARN] Step 1 failed, retrying...
-        python\python.exe -m pip install --no-cache-dir six torch_complex
-    )
-    echo  Step 2/2: 安装 SenseVoice 和 PyTorch (CPU)...
-    python\python.exe -m pip install --no-cache-dir funasr modelscope torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+    echo        Installing web framework ...
+    python\python.exe -m pip install fastapi uvicorn websockets numpy pydantic soundfile six torch_complex
+    echo        Installing SenseVoice + PyTorch CPU ...
+    python\python.exe -m pip install funasr modelscope --extra-index-url https://download.pytorch.org/whl/cpu torch torchaudio
 )
-echo  [OK] 依赖安装完成
-echo.
+echo  [3/4] Dependencies ... OK
 
-:: ---- 第四步：检查模型 ----
-echo  [4/4] 检查模型...
+:: ============================================================
+:: Step 4: Model
+:: ============================================================
+echo  [4/4] Model ...
 if exist "models\SenseVoiceSmall" (
-    echo  [OK] 模型已存在
+    echo  [4/4] Model ... OK (local)
 ) else (
-    echo  首次启动时会自动下载模型（约893MB），请耐心等待。
+    echo  [4/4] Model ... will download on first run (~893MB)
 )
-echo.
 
-:: ---- 启动服务 ----
+echo.
 echo  =====================================================
-echo     正在启动服务...
-echo     启动后会自动打开浏览器
-echo     按 Ctrl+C 停止服务
+echo     Starting ...
 echo  =====================================================
 echo.
 
-:: 设置环境变量
 set PYTHONPATH=%CD%
-
-:: 用 python launcher 启动（自动等模型就绪 + 开浏览器）
 python\python.exe launcher.py
 
 pause
+endlocal
