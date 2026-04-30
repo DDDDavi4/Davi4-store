@@ -99,6 +99,7 @@ MODEL_REGISTRY = {
         "vad_local_dir": "fsmn-vad",
         "need_vad": True,
         "need_sensevoice_import": False,
+        "trust_remote_code": True,                    # Nano 需要信任远程代码（funasr 1.3.1 默认 False）
         "language": "中文",
         "use_itn": True,
         "generate_cache": True,                       # Nano generate 需要 cache={}
@@ -177,6 +178,10 @@ def load_sensevoice_model(model_id: str = None):
         if vad_path:
             auto_kwargs["vad_model"] = vad_path
             auto_kwargs["vad_kwargs"] = {"max_single_segment_time": 6000}
+
+        # Nano 等新模型需要 trust_remote_code=True
+        if model_cfg.get("trust_remote_code"):
+            auto_kwargs["trust_remote_code"] = True
 
         sensevoice_model = AutoModel(**auto_kwargs)
 
