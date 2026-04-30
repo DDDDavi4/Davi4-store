@@ -90,21 +90,7 @@ MODEL_REGISTRY = {
         "language": "zh",
         "use_itn": True,
     },
-    "Fun-ASR-Nano-2512": {
-        "display_name": "Fun-ASR Nano",
-        "description": "800M 参数，中文 CER 1.80%，支持方言/热词，远场噪声表现极强",
-        "model_id": "FunAudioLLM/Fun-ASR-Nano-2512",  # ModelScope ID
-        "local_dir": "Fun-ASR-Nano-2512",             # 本地 models/ 子目录名
-        "vad_model_id": "fsmn-vad",
-        "vad_local_dir": "fsmn-vad",
-        "need_vad": True,
-        "need_sensevoice_import": False,
-        "trust_remote_code": True,                    # Nano 需要信任远程代码
-        "remote_code": "./model.py",                  # 指定模型目录下的 model.py
-        "language": "中文",
-        "use_itn": True,
-        "generate_cache": True,                       # Nano generate 需要 cache={}
-    },
+
 }
 
 # 当前选中的模型 ID
@@ -117,36 +103,7 @@ sensevoice_loaded = False
 sensevoice_error: Optional[str] = None
 
 
-def _ensure_model_py(model_path: str):
-    """确保模型目录下有 model.py（Nano 模型需要），缺失时从 GitHub 下载"""
-    model_dir = Path(model_path)
 
-    # model_path 可能是 ModelScope ID（如 FunAudioLLM/Fun-ASR-Nano-2512）
-    # 也可能是本地路径（如 /path/to/models/Fun-ASR-Nano-2512）
-    if not model_dir.exists():
-        # 尝试 ModelScope 缓存目录
-        cache_base = Path.home() / ".cache" / "modelscope" / "hub" / "models"
-        # FunAudioLLM/Fun-ASR-Nano-2512 -> FunAudioLLM/Fun-ASR-Nano-2512
-        candidate = cache_base / model_path
-        if candidate.exists():
-            model_dir = candidate
-        else:
-            # 在线路径，AutoModel 还没下载，无法预先放置
-            return
-
-    target = model_dir / "model.py"
-    if target.exists():
-        return
-
-    # 从 GitHub 下载 model.py
-    url = "https://raw.githubusercontent.com/FunAudioLLM/Fun-ASR/main/model.py"
-    print(f"[Model] Nano 模型缺少 model.py，正在从 GitHub 下载: {url}")
-    try:
-        import urllib.request
-        urllib.request.urlretrieve(url, str(target))
-        print(f"[Model] model.py 下载完成: {target}")
-    except Exception as e:
-        print(f"[Model] model.py 下载失败: {e}，请手动下载放到 {target}")
 
 
 def _resolve_model_path(model_cfg: dict) -> tuple:
@@ -157,10 +114,6 @@ def _resolve_model_path(model_cfg: dict) -> tuple:
     local_model = base_dir / "models" / model_cfg["local_dir"]
     model_path = str(local_model) if local_model.exists() else model_cfg["model_id"]
     model_src = "本地 models/" if local_model.exists() else "ModelScope 在线"
-
-    # Nano 模型需要 model.py 文件，如果本地目录缺它就自动下载
-    if model_cfg.get("remote_code") and model_cfg.get("trust_remote_code"):
-        _ensure_model_py(model_path, model_src)
 
     # VAD 路径
     if model_cfg.get("need_vad"):
@@ -215,12 +168,6 @@ def load_sensevoice_model(model_id: str = None):
         if vad_path:
             auto_kwargs["vad_model"] = vad_path
             auto_kwargs["vad_kwargs"] = {"max_single_segment_time": 6000}
-
-        # Nano 等新模型需要 trust_remote_code=True + remote_code
-        if model_cfg.get("trust_remote_code"):
-            auto_kwargs["trust_remote_code"] = True
-        if model_cfg.get("remote_code"):
-            auto_kwargs["remote_code"] = model_cfg["remote_code"]
 
         sensevoice_model = AutoModel(**auto_kwargs)
 
@@ -550,9 +497,6 @@ def do_sensevoice_recognize(audio_data: np.ndarray) -> str:
             language=model_cfg.get("language", "zh"),
             use_itn=model_cfg.get("use_itn", True),
         )
-        # Nano 模型需要 cache={} 参数
-        if model_cfg.get("generate_cache"):
-            generate_kwargs["cache"] = {}
 
         res = sensevoice_model.generate(**generate_kwargs)
         # 提取文本并去除特殊标签（<|NEUTRAL|> <|Speech|> 等，SenseVoice 系列）

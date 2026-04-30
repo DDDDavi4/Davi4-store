@@ -436,6 +436,12 @@
     color: #fff;
   }
 
+  .chunk-controls-disabled {
+    opacity: 0.35;
+    pointer-events: none;
+    cursor: not-allowed;
+  }
+
   .teleprompter-toolbar .font-size-btn {
     width: 32px;
     height: 32px;
@@ -946,7 +952,7 @@
     <select class="model-select" id="modelSelect" onchange="switchModel(this.value)" title="切换识别模型">
       <option value="SenseVoiceSmall">SenseVoice 小型</option>
       <option value="paraformer-zh">Paraformer 中文</option>
-      <option value="Fun-ASR-Nano-2512">Fun-ASR Nano</option>
+
     </select>
   </div>
   <div class="topbar-right">
@@ -1061,9 +1067,9 @@
         <div class="toolbar-group">
           <span class="toolbar-label">片段</span>
           <button class="slice-mode-btn" id="sliceModeBtn" onclick="toggleSliceMode()" title="切换切片模式">定时</button>
-          <button class="font-size-btn" onclick="changeChunkSeconds(-0.5)">-</button>
+          <button class="font-size-btn" id="chunkMinusBtn" onclick="changeChunkSeconds(-0.5)">-</button>
           <span class="font-size-display" id="chunkSecondsDisplay">1.0s</span>
-          <button class="font-size-btn" onclick="changeChunkSeconds(0.5)">+</button>
+          <button class="font-size-btn" id="chunkPlusBtn" onclick="changeChunkSeconds(0.5)">+</button>
         </div>
         <div class="toolbar-sep"></div>
         <div class="toolbar-group">
@@ -1113,9 +1119,9 @@
       <div class="control-group" style="margin-left:8px;">
         <span class="control-label">片段</span>
         <button class="slice-mode-btn" id="sliceModeBtnD" onclick="toggleSliceMode()" title="切换切片模式">定时</button>
-        <button class="font-size-btn" onclick="changeChunkSeconds(-0.5)">-</button>
+        <button class="font-size-btn" id="chunkMinusBtnD" onclick="changeChunkSeconds(-0.5)">-</button>
         <span class="font-size-display" id="chunkSecondsDisplayD">1.0s</span>
-        <button class="font-size-btn" onclick="changeChunkSeconds(0.5)">+</button>
+        <button class="font-size-btn" id="chunkPlusBtnD" onclick="changeChunkSeconds(0.5)">+</button>
       </div>
       <div class="volume-bar-container">
         <canvas class="volume-canvas" id="volumeCanvasD"></canvas>
@@ -1326,6 +1332,13 @@ function handleMessage(data) {
             btn.textContent = label;
             btn.classList.toggle('active', currentSliceMode === 'breath');
           }
+        });
+        // 气口模式下禁用时间调整
+        const isBreath = currentSliceMode === 'breath';
+        ['chunkMinusBtn', 'chunkPlusBtn', 'chunkSecondsDisplay',
+         'chunkMinusBtnD', 'chunkPlusBtnD', 'chunkSecondsDisplayD'].forEach(id => {
+          const el = document.getElementById(id);
+          if (el) el.classList.toggle('chunk-controls-disabled', isBreath);
         });
       }
       break;
@@ -1935,6 +1948,13 @@ function syncChunkSecondsDisplay() {
         btn.classList.toggle('active', currentSliceMode === 'breath');
       }
     });
+    // 气口模式下禁用时间调整
+    const isBreath = currentSliceMode === 'breath';
+    ['chunkMinusBtn', 'chunkPlusBtn', 'chunkSecondsDisplay',
+     'chunkMinusBtnD', 'chunkPlusBtnD', 'chunkSecondsDisplayD'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.classList.toggle('chunk-controls-disabled', isBreath);
+    });
   }).catch(() => {});
 }
 
@@ -1968,7 +1988,13 @@ function toggleSliceMode() {
       btn.classList.toggle('active', currentSliceMode === 'breath');
     }
   });
-  // 气口模式下片段时间调节失去意义，但保留（用作最小累积时长）
+  // 气口模式下禁用时间调整控件（灰色+不可点击）
+  const isBreath = currentSliceMode === 'breath';
+  ['chunkMinusBtn', 'chunkPlusBtn', 'chunkSecondsDisplay',
+   'chunkMinusBtnD', 'chunkPlusBtnD', 'chunkSecondsDisplayD'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle('chunk-controls-disabled', isBreath);
+  });
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ cmd: 'set_slice_mode', mode: currentSliceMode }));
   }
